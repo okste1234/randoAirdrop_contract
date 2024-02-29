@@ -1,44 +1,65 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+// Importing necessary contracts from Chainlink and OpenZeppelin libraries
 import {VRFCoordinatorV2Interface} from "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
 import {VRFConsumerBaseV2} from "@chainlink/contracts/src/v0.8/vrf/VRFConsumerBaseV2.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+// Contract for conducting a random airdrop using Chainlink VRF
 contract RandoAirdrop is VRFConsumerBaseV2 {
-    VRFCoordinatorV2Interface COORDINATOR;
-    uint64 s_subscriptionId;
+    VRFCoordinatorV2Interface COORDINATOR; // Instance of Chainlink's VRFCoordinatorV2Interface
+    uint64 s_subscriptionId; // Subscription ID for Chainlink VRF
 
-    IERC20 public token;
-    address public owner;
+    IERC20 token; // Instance of the ERC20 token contract
+    address owner; // Address of the owner of the contract
 
-    address[] public participantAddresses;
+    address[] public participantAddresses; // Array to store addresses of participants
+    address[] winners; // Array to store addresses of winners
 
-    address[] winners;
+    uint256 public totalEntries; // Total number of entries in the activity
+    uint256 public prizePool; // Total prize pool for the winners
 
-    uint256 public totalEntries;
+    bool isSelectionComplete; // Flag indicating whether winner selection process is complete
 
-    uint256 public prizePool;
-
-    bool public isSelectionComplete;
-
-    // past requests Id.
+    // Array to store past request IDs
     uint256[] public requestIds;
-    uint256 public lastRequestId;
+    uint256 public lastRequestId; // ID of the last request made for randomness
 
-    uint256 public randomResultRequestId;
+    uint256 public randomResultRequestId; // Request ID for the generated random number
 
     bytes32 keyHash =
-        0x474e34a077df58807dbe9c96d3c009b23b3c6d0cce433e59bbf5b34f823bc56c;
+        0x474e34a077df58807dbe9c96d3c009b23b3c6d0cce433e59bbf5b34f823bc56c; // Key hash used for Chainlink VRF
 
-    uint16 requestConfirmations;
+    uint16 requestConfirmations; // Number of confirmations required for a randomness request
 
-    uint32 numWords;
+    uint32 numWords; // Number of random words to be generated
+    uint32 callbackGasLimit = 400000; // Gas limit for the callback function
 
-    uint32 callbackGasLimit = 100000;
+    bool winnerConfigured; // Flag indicating whether winners are configured
 
-    bool winnerConfigured;
+    // Mapping to store request status based on requestId
+    mapping(uint256 => RequestStatus) public requests;
 
+    // Mapping to store participant details based on address
+    mapping(address => Participant) public participants;
+
+    // Struct to represent participant details
+    struct Participant {
+        uint256 entries; // Number of entries by the participant
+        string[] postContent; // Content posted by the participant
+        bool isRegistered; // Flag indicating participant registration status
+        address addr; // Address of the participant
+    }
+
+    // Struct to represent status of a randomness request
+    struct RequestStatus {
+        bool fulfilled; // Whether the request has been successfully fulfilled
+        bool exists; // Whether a requestId exists
+        uint256[] randomWords; // Array to store the generated random words
+    }
+
+    // Constructor to initialize the contract with subscription ID and token address
     constructor(
         uint64 subscriptionId,
         address _tokenAddress
@@ -51,91 +72,78 @@ contract RandoAirdrop is VRFConsumerBaseV2 {
         token = IERC20(_tokenAddress);
     }
 
-    struct Participant {
-        uint256 entries;
-        string[] postContent;
-        bool isRegistered;
-        address addr;
-    }
-
-    struct RequestStatus {
-        bool fulfilled; // whether the request has been successfully fulfilled
-        bool exists; // whether a requestId exists
-        uint256[] randomWords;
-    }
-
-    mapping(uint256 => RequestStatus) public requests;
-
-    mapping(address => Participant) public participants;
-
+    // Event emitted when a participant is registered
     event ParticipantRegistered(address participant);
+
+    // Event emitted when a participant participates in the activity
     event ActivityParticipated(address participant, uint256 entries);
+
+    // Event emitted when prize distribution process is triggered
     event PrizeDistributionTriggered(uint256 requestId, uint32 numWords);
+
+    // Event emitted when winners are selected
     event WinnersSelected(address[] winners, uint256 amounts);
+
+    // Event emitted when airdrop is distributed to a winner
     event AirdropDistributed(address winner, uint256 amount);
 
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Only owner can call this function.");
-        _;
-    }
-
+    // Function for participants to register
     function registerParticipant() external {
         require(!participants[msg.sender].isRegistered, "Already registered");
+
         participants[msg.sender].isRegistered = true;
+
         participants[msg.sender].addr = msg.sender;
+
         emit ParticipantRegistered(msg.sender);
     }
 
+    // Function for participants to create a post and earn entries
     function createPost(
         string memory _content
     ) external returns (uint256 entries_) {
         require(participants[msg.sender].isRegistered, "Not registered");
-
-        require(totalEntries != 10, "activity ended");
+        require(totalEntries != 10, "Activities ended");
 
         participants[msg.sender].postContent.push(_content);
-
-        totalEntries = totalEntries + 1;
-
-        participants[msg.sender].entries = participants[msg.sender].entries + 1;
-
+        totalEntries += 1;
+        participants[msg.sender].entries += 1;
         participantAddresses.push(msg.sender);
-
         entries_ = participants[msg.sender].entries;
 
         emit ActivityParticipated(msg.sender, entries_);
     }
 
-    //Function to configure the number of winners and total prize
+    // Function for the owner to configure the number of winners and total prize
     function configureSelection(
         uint32 _numberOfWinners,
         uint256 _totalPrize
-    ) external onlyOwner {
+    ) external {
+        onlyOwner();
+
         require(!isSelectionComplete, "Selection process is already complete");
         require(
             _numberOfWinners < participantAddresses.length,
             "Number of winners exceeds total participants"
         );
-
         require(
             token.balanceOf(msg.sender) >= _totalPrize,
-            "prize greater available token balance"
+            "Prize greater than available token balance"
         );
 
         numWords = _numberOfWinners;
         prizePool = _totalPrize;
 
-        token.transferFrom(msg.sender, address(this), prizePool);
+        token.transferFrom(msg.sender, address(this), _totalPrize);
 
         winnerConfigured = true;
     }
 
-    function triggerPrizeDistribution()
-        external
-        onlyOwner
-        returns (uint256 requestId)
-    {
-        require(winnerConfigured, "configure winners number first");
+    // Function for the owner to trigger the prize distribution process
+    function triggerPrizeDistribution() external returns (uint256 requestId) {
+        onlyOwner();
+
+        require(winnerConfigured, "Configure winners number first");
 
         requestId = COORDINATOR.requestRandomWords(
             keyHash,
@@ -146,7 +154,6 @@ contract RandoAirdrop is VRFConsumerBaseV2 {
         );
 
         RequestStatus storage requestStatus = requests[requestId];
-
         requestStatus.exists = true;
 
         requestIds.push(requestId);
@@ -157,14 +164,17 @@ contract RandoAirdrop is VRFConsumerBaseV2 {
         return requestId;
     }
 
+    // Internal function to handle the fulfillment of random words request
     function fulfillRandomWords(
         uint256 _requestId,
         uint256[] memory _randomWords
     ) internal override {
         require(_requestId == randomResultRequestId, "Invalid request ID");
-        require(requests[_requestId].exists, "request not found");
+        require(requests[_requestId].exists, "Request not found");
+
         requests[_requestId].fulfilled = true;
         requests[_requestId].randomWords = _randomWords;
+
         _selectWinners(_requestId);
     }
 
@@ -182,9 +192,18 @@ contract RandoAirdrop is VRFConsumerBaseV2 {
         }
     }
 
-    function distributeAirdrop() external onlyOwner {
+    function getWinners() external view returns (address[] memory) {
+        return winners;
+    }
+
+    // Function to distribute the airdrop prizes to the winners
+    function distributeAirdrop() external {
+        onlyOwner();
+
+        // Ensure that the winner selection process is complete
         require(isSelectionComplete, "Selection process not yet complete");
 
+        // Ensure that there are winners selected
         require(winners.length > 0, "No winners selected");
 
         uint winnersEntries;
@@ -194,17 +213,25 @@ contract RandoAirdrop is VRFConsumerBaseV2 {
             winnersEntries += participants[winners[i]].entries;
         }
 
-        // Distribute the prize pool proportionally based on each winner entries
+        // Distribute the prize pool proportionally based on each winner's entries
         for (uint256 i = 0; i < winners.length; i++) {
             address winner = winners[i];
             uint256 winnerEntries = participants[winner].entries;
+
+            // Calculate the airdrop amount for the winner
             uint256 airdropAmount = (winnerEntries * prizePool) /
                 winnersEntries;
 
-            // Transfer airdrop amount to the winner
+            // Transfer the airdrop amount to the winner
             token.transfer(winner, airdropAmount);
 
+            // Emit an event indicating the distribution of airdrop to the winner
             emit AirdropDistributed(winner, airdropAmount);
         }
+    }
+
+    // A helper function to set onlyowner access control
+    function onlyOwner() private view {
+        require(msg.sender == owner, "Only owner can call this function.");
     }
 }
