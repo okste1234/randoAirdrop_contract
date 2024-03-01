@@ -26,8 +26,6 @@ contract RandoAirdrop is VRFConsumerBaseV2 {
     uint256[] public requestIds;
     uint256 public lastRequestId; // ID of the last request made for randomness
 
-    uint256 public randomResultRequestId; // Request ID for the generated random number
-
     bytes32 keyHash =
         0x474e34a077df58807dbe9c96d3c009b23b3c6d0cce433e59bbf5b34f823bc56c; // Key hash used for Chainlink VRF
 
@@ -169,7 +167,6 @@ contract RandoAirdrop is VRFConsumerBaseV2 {
         uint256 _requestId,
         uint256[] memory _randomWords
     ) internal override {
-        require(_requestId == randomResultRequestId, "Invalid request ID");
         require(requests[_requestId].exists, "Request not found");
 
         requests[_requestId].fulfilled = true;
